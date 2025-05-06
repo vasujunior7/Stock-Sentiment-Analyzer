@@ -10,6 +10,8 @@ from plotly.subplots import make_subplots
 import random
 import time
 from streamlit.components.v1 import html
+import re
+from textblob import TextBlob
 
 # Set page config with wide layout and custom theme
 st.set_page_config(
@@ -140,7 +142,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# Initialize AFINN
+# Initialize sentiment analyzers
 afinn = Afinn()
 
 def load_companies():
@@ -152,25 +154,83 @@ def load_companies():
         st.error("Error: Company.csv not found!")
         return None
 
+def clean_text(text):
+    """Clean and preprocess text for better sentiment analysis"""
+    # Convert to lowercase
+    text = text.lower()
+    # Remove URLs
+    text = re.sub(r'http\S+|www\S+|https\S+', '', text, flags=re.MULTILINE)
+    # Remove user @ references and '#' from tweet
+    text = re.sub(r'\@\w+|\#\w+', '', text)
+    # Remove punctuations and numbers
+    text = re.sub(r'[^\w\s]', '', text)
+    # Remove numbers
+    text = re.sub(r'\d+', '', text)
+    # Remove multiple spaces
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+def get_enhanced_sentiment(text):
+    """Get enhanced sentiment score using multiple analyzers"""
+    # Clean the text
+    cleaned_text = clean_text(text)
+    
+    # Get AFINN sentiment
+    afinn_score = afinn.score(cleaned_text)
+    
+    # Get TextBlob sentiment
+    blob = TextBlob(cleaned_text)
+    textblob_score = blob.sentiment.polarity * 10  # Scale up to match AFINN range
+    
+    # Custom sentiment boosters/reducers
+    positive_words = ['excellent', 'amazing', 'great', 'good', 'positive', 'success', 'profit', 'growth', 'innovative']
+    negative_words = ['bad', 'poor', 'terrible', 'negative', 'loss', 'decline', 'fail', 'risk', 'crash']
+    
+    # Count positive and negative words
+    positive_count = sum(1 for word in cleaned_text.split() if word in positive_words)
+    negative_count = sum(1 for word in cleaned_text.split() if word in negative_words)
+    
+    # Calculate word impact
+    word_impact = (positive_count - negative_count) * 2
+    
+    # Combine scores with weights
+    final_score = (afinn_score * 0.4 + textblob_score * 0.4 + word_impact * 0.2)
+    
+    # Normalize score to be between -5 and 5
+    final_score = max(min(final_score, 5), -5)
+    
+    return final_score
+
 def get_company_sensitivity(company_name):
     """Get company-specific sensitivity to sentiment"""
     sensitivities = {
-        'Apple': 1.2,
-        'Google Inc': 1.0,
-        'Amazon.com': 1.3,
-        'Tesla Inc': 1.5,
-        'Microsoft': 0.9,
+        'Apple': 2.5,      # More sensitive to market sentiment
+        'Google Inc': 2.0, # Tech companies tend to be more volatile
+        'Amazon.com': 2.8, # E-commerce giant, highly sensitive
+        'Tesla Inc': 3.0,  # Known for high volatility
+        'Microsoft': 1.8,  # Relatively stable but still sensitive
     }
-    return sensitivities.get(company_name, 1.0)
+    return sensitivities.get(company_name, 2.0)
 
 def simulate_company_metrics(sentiment_score, company_name, base_price=100.0, base_volume=1000000):
     """Simulate company metrics based on sentiment score with company-specific sensitivity"""
     sensitivity = get_company_sensitivity(company_name)
+    
+    # Enhanced sentiment impact calculation
     adjusted_score = sentiment_score * sensitivity
-    price_change = adjusted_score * (0.1 + random.uniform(-0.02, 0.02))
+    
+    # Calculate price change with more significant impact
+    price_change_percentage = adjusted_score * (1.5 + random.uniform(-0.3, 0.3))
+    
+    # Apply the percentage change to the base price
+    price_change = (base_price * price_change_percentage) / 100
     new_price = base_price + price_change
-    volume_change = abs(adjusted_score) * (10000 + random.randint(-2000, 2000))
+    
+    # Volume changes are now more dramatic for significant sentiment scores
+    volume_multiplier = 1 + (abs(sentiment_score) / 5)
+    volume_change = base_volume * (volume_multiplier - 1) * random.uniform(0.8, 1.2)
     new_volume = base_volume + volume_change
+    
     return new_price, new_volume
 
 def create_dynamic_chart(prices, dates, sentiment_scores, company_name):
@@ -304,6 +364,32 @@ def create_dynamic_chart(prices, dates, sentiment_scores, company_name):
     
     return fig
 
+def create_analysis_card(sentiment_score, analysis_text):
+    """Create a detailed analysis card with sentiment results"""
+    if sentiment_score > 0:
+        sentiment_color = '#4CAF50'  # Green for positive
+    elif sentiment_score < 0:
+        sentiment_color = '#F44336'  # Red for negative
+    else:
+        sentiment_color = '#9E9E9E'  # Grey for neutral
+
+    sentiment_label = 'Positive' if sentiment_score > 0 else 'Negative' if sentiment_score < 0 else 'Neutral'
+    
+    return f"""
+    <div class='card' style='padding: 20px; margin: 10px 0;'>
+        <div style='display: flex; justify-content: space-between; margin-bottom: 15px;'>
+            <div>
+                <h3 style='color: {sentiment_color};'>Sentiment Score: {sentiment_score:.2f}</h3>
+                <p>Overall Sentiment: {sentiment_label}</p>
+            </div>
+        </div>
+        <div style='margin-bottom: 15px;'>
+            <h5>Analysis</h5>
+            <p>{analysis_text}</p>
+        </div>
+    </div>
+    """
+
 def main():
     # Add animated title
     st.markdown("""
@@ -341,40 +427,53 @@ def main():
     with col1:
         st.markdown("""
         <div class='card'>
-            <h3 style='color: #1E88E5;'>Create a Tweet</h3>
+            <h3 style='color: #1E88E5;'>Market Analysis Input</h3>
         </div>
         """, unsafe_allow_html=True)
         
         tweet_text = st.text_area(
-            "Enter your tweet:",
+            "Enter market news or analysis:",
             height=100,
-            placeholder="What's happening with these companies?"
+            placeholder="What's happening with these companies? (News, analysis, or market sentiment)"
         )
         
         if st.button("Analyze Impact", key="analyze_button"):
             if tweet_text and selected_companies:
-                with st.spinner('Analyzing impact...'):
-                    time.sleep(1)  # Simulate processing time
+                with st.spinner('Analyzing market sentiment...'):
+                    # Get sentiment analysis using TextBlob and AFINN
+                    sentiment_score = get_enhanced_sentiment(tweet_text)
+                    
+                    # Create analysis text
+                    blob = TextBlob(tweet_text)
+                    analysis_text = f"The text shows {'positive' if sentiment_score > 0 else 'negative' if sentiment_score < 0 else 'neutral'} sentiment with a score of {sentiment_score:.2f}. "
+                    analysis_text += f"The text has a polarity of {blob.sentiment.polarity:.2f} and subjectivity of {blob.sentiment.subjectivity:.2f}."
+                    
+                    # Display detailed analysis card
+                    st.markdown(
+                        create_analysis_card(sentiment_score, analysis_text),
+                        unsafe_allow_html=True
+                    )
                     
                     results = {}
                     time_points = [datetime.now() + timedelta(minutes=i) for i in range(10)]
                     
                     for company in selected_companies:
                         company_data = companies[companies['company_name'] == company].iloc[0]
-                        base_score = afinn.score(tweet_text)
                         
                         prices = [100.0]
                         sentiments = [0.0]
+                        cumulative_sentiment = 0
                         
                         for i in range(1, 10):
-                            current_score = base_score * (1 + random.uniform(-0.2, 0.2))
-                            price, _ = simulate_company_metrics(current_score, company)
+                            current_score = sentiment_score * (1 + random.uniform(-0.15, 0.15))
+                            cumulative_sentiment += current_score * 0.3
+                            price, _ = simulate_company_metrics(cumulative_sentiment, company)
                             prices.append(price)
                             sentiments.append(current_score)
                         
                         results[company] = {
                             'final_price': prices[-1],
-                            'final_sentiment': sentiments[-1],
+                            'final_sentiment': sum(sentiments) / len(sentiments),
                             'price_movement': prices,
                             'sentiment_movement': sentiments,
                             'time_points': time_points
@@ -431,7 +530,6 @@ def main():
                         'Timestamp': datetime.now()
                     })
                     results_df.to_csv('sentiment_results.csv', index=False)
-                    
             else:
                 st.warning("Please enter a tweet and select at least one company")
     
@@ -442,7 +540,7 @@ def main():
             <p>How it works:</p>
             <ol>
                 <li>Select companies from the sidebar</li>
-                <li>Create a tweet about the companies</li>
+                <li>Enter market news or analysis</li>
                 <li>View real-time impact on:
                     <ul>
                         <li>Stock prices</li>
