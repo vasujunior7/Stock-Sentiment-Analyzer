@@ -45,4 +45,9 @@ Thumbs.db
 *.sqlite3
 
 # Logs
-*.log 
+*.log
+
+# Exclude specific large files
+Tweet.csv
+Company_Tweet.csv
+CompanyValues.csv 
